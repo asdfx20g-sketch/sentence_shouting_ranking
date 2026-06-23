@@ -14,15 +14,8 @@ import {
   Pencil,
   Cloud,
   CloudOff,
+  Calendar,
 } from "lucide-react";
-
-const DOC_PATH = { collection: "shoutingData", doc: "main" };
-
-const DEFAULT_CLASSES = {
-  "초등 3반": ["김민준", "이서윤", "박지호", "최하은", "정도윤"],
-  "초등 4반": ["강서연", "윤지후", "임수아", "한예준", "오다인"],
-  "초등 5반": ["서준우", "황아린", "조은우", "신지유", "권태양"],
-};
 
 const CRITERIA = [
   { key: "pronunciation", label: "발음", sub: "Pronunciation", max: 5 },
@@ -35,6 +28,12 @@ const TOTAL_SENTENCES = 30;
 const MAX_TOTAL = 20 + TOTAL_SENTENCES;
 const SCORE_OPTIONS = [0, 1, 2, 3, 4, 5];
 
+const DEFAULT_CLASSES = {
+  "초등 3반": ["김민준", "이서윤", "박지호", "최하은", "정도윤"],
+  "초등 4반": ["강서연", "윤지후", "임수아", "한예준", "오다인"],
+  "초등 5반": ["서준우", "황아린", "조은우", "신지유", "권태양"],
+};
+
 function emptyScore() {
   return {
     pronunciation: 0,
@@ -46,9 +45,29 @@ function emptyScore() {
   };
 }
 
+function getCurrentMonthKey() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  return `${y}-${m}`;
+}
+
+function monthKeyToLabel(key) {
+  const [y, m] = key.split("-");
+  return `${y}년 ${parseInt(m, 10)}월`;
+}
+
+// 반/학생 명단은 월과 무관하게 공통으로 관리 (classesMeta 문서)
+const CLASSES_DOC = { collection: "shoutingMeta", doc: "classes" };
+// 월별 점수는 shoutingScores/{YYYY-MM} 문서에 저장
+const scoresDocRef = (monthKey) => ({ collection: "shoutingScores", doc: monthKey });
+
 export default function App() {
   const [classes, setClasses] = useState(DEFAULT_CLASSES);
-  const [scores, setScores] = useState({});
+  const [scoresByMonth, setScoresByMonth] = useState({}); // { "2026-06": {...}, "2026-07": {...} }
+  const [availableMonths, setAvailableMonths] = useState([]);
+  const [currentMonth, setCurrentMonth] = useState(getCurrentMonthKey());
+
   const [loaded, setLoaded] = useState(false);
   const [connError, setConnError] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -57,27 +76,23 @@ export default function App() {
   const [selectedClass, setSelectedClass] = useState(null);
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [savedFlash, setSavedFlash] = useState(false);
+  const [rankingMonth, setRankingMonth] = useState(getCurrentMonthKey());
 
   const saveTimer = useRef(null);
   const skipNextSave = useRef(false);
+  const loadedMonths = useRef(new Set());
 
+  // ---- 반/학생 명단 최초 로드 ----
   useEffect(() => {
     (async () => {
       try {
-        const ref = doc(db, DOC_PATH.collection, DOC_PATH.doc);
+        const ref = doc(db, CLASSES_DOC.collection, CLASSES_DOC.doc);
         const snap = await getDoc(ref);
         if (snap.exists()) {
           const data = snap.data();
-          skipNextSave.current = true;
           if (data.classes) setClasses(data.classes);
-          if (data.scores) setScores(data.scores);
         } else {
-          skipNextSave.current = true;
-          await setDoc(ref, {
-            classes: DEFAULT_CLASSES,
-            scores: {},
-            updatedAt: Date.now(),
-          });
+          await setDoc(ref, { classes: DEFAULT_CLASSES, updatedAt: Date.now() });
         }
         setConnError(false);
       } catch (e) {
@@ -89,6 +104,51 @@ export default function App() {
     })();
   }, []);
 
+  // ---- 특정 월의 점수 데이터 로드 (필요할 때마다) ----
+  async function ensureMonthLoaded(monthKey) {
+    if (loadedMonths.current.has(monthKey)) return;
+    try {
+      const { collection, doc: docName } = scoresDocRef(monthKey);
+      const ref = doc(db, collection, docName);
+      const snap = await getDoc(ref);
+      skipNextSave.current = true;
+      if (snap.exists()) {
+        const data = snap.data();
+        setScoresByMonth((prev) => ({ ...prev, [monthKey]: data.scores || {} }));
+        setAvailableMonths((prev) => (prev.includes(monthKey) ? prev : [...prev, monthKey].sort()));
+      } else {
+        setScoresByMonth((prev) => ({ ...prev, [monthKey]: {} }));
+      }
+      loadedMonths.current.add(monthKey);
+    } catch (e) {
+      console.error("월별 데이터 로드 실패:", e);
+      setConnError(true);
+    }
+  }
+
+  // 전체 월 목록을 가져오기 위해, 메타 문서에 "사용된 월 리스트"도 같이 관리
+  useEffect(() => {
+    if (!loaded) return;
+    (async () => {
+      try {
+        const ref = doc(db, "shoutingMeta", "monthsList");
+        const snap = await getDoc(ref);
+        if (snap.exists()) {
+          const months = snap.data().months || [];
+          setAvailableMonths((prev) => Array.from(new Set([...prev, ...months])).sort());
+          for (const m of months) {
+            await ensureMonthLoaded(m);
+          }
+        }
+        await ensureMonthLoaded(currentMonth);
+      } catch (e) {
+        console.error("월 목록 로드 실패:", e);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded]);
+
+  // ---- classes 변경시 자동 저장 ----
   useEffect(() => {
     if (!loaded) return;
     if (skipNextSave.current) {
@@ -99,8 +159,8 @@ export default function App() {
     saveTimer.current = setTimeout(async () => {
       setSyncing(true);
       try {
-        const ref = doc(db, DOC_PATH.collection, DOC_PATH.doc);
-        await setDoc(ref, { classes, scores, updatedAt: Date.now() });
+        const ref = doc(db, CLASSES_DOC.collection, CLASSES_DOC.doc);
+        await setDoc(ref, { classes, updatedAt: Date.now() });
         setConnError(false);
       } catch (e) {
         console.error("저장 실패:", e);
@@ -110,18 +170,55 @@ export default function App() {
       }
     }, 500);
     return () => clearTimeout(saveTimer.current);
-  }, [classes, scores, loaded]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [classes, loaded]);
 
-  function getScore(cls, student) {
-    return scores?.[cls]?.[student] || emptyScore();
+  // ---- 현재 월 점수 저장 ----
+  async function saveMonthScores(monthKey, monthScores) {
+    setSyncing(true);
+    try {
+      const { collection, doc: docName } = scoresDocRef(monthKey);
+      const ref = doc(db, collection, docName);
+      await setDoc(ref, { scores: monthScores, updatedAt: Date.now() });
+
+      // 월 목록에 등록
+      if (!availableMonths.includes(monthKey)) {
+        const newMonths = Array.from(new Set([...availableMonths, monthKey])).sort();
+        setAvailableMonths(newMonths);
+        const monthsRef = doc(db, "shoutingMeta", "monthsList");
+        await setDoc(monthsRef, { months: newMonths, updatedAt: Date.now() });
+      }
+      setConnError(false);
+    } catch (e) {
+      console.error("점수 저장 실패:", e);
+      setConnError(true);
+    } finally {
+      setSyncing(false);
+    }
   }
 
-  function updateScore(cls, student, updater) {
-    setScores((prev) => {
-      const prevClassScores = prev[cls] || {};
+  function getScore(monthKey, cls, student) {
+    return scoresByMonth?.[monthKey]?.[cls]?.[student] || emptyScore();
+  }
+
+  function updateScore(monthKey, cls, student, updater) {
+    setScoresByMonth((prev) => {
+      const monthScores = prev[monthKey] || {};
+      const prevClassScores = monthScores[cls] || {};
       const prevScore = prevClassScores[student] || emptyScore();
       const newScore = updater(prevScore);
-      return { ...prev, [cls]: { ...prevClassScores, [student]: newScore } };
+      const newMonthScores = {
+        ...monthScores,
+        [cls]: { ...prevClassScores, [student]: newScore },
+      };
+      const next = { ...prev, [monthKey]: newMonthScores };
+
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => {
+        saveMonthScores(monthKey, newMonthScores);
+      }, 500);
+
+      return next;
     });
   }
 
@@ -140,14 +237,14 @@ export default function App() {
     setTimeout(() => setSavedFlash(false), 1500);
   }
 
-  function exportCSV() {
+  function exportCSV(monthKey) {
     const rows = [];
-    rows.push(["No", "반", "이름", "발음", "유창성", "자신감", "암기정확도", "맞은문장수", "총점", "비고"]);
+    rows.push(["월", "No", "반", "이름", "발음", "유창성", "자신감", "암기정확도", "맞은문장수", "총점", "비고"]);
     let no = 1;
     const allEntries = [];
     Object.entries(classes).forEach(([cls, students]) => {
       students.forEach((student) => {
-        const s = getScore(cls, student);
+        const s = getScore(monthKey, cls, student);
         const total = calcTotal(s);
         allEntries.push({ cls, student, s, total });
       });
@@ -155,7 +252,7 @@ export default function App() {
     allEntries.sort((a, b) => b.total - a.total);
     allEntries.forEach((entry) => {
       rows.push([
-        no++, entry.cls, entry.student,
+        monthKeyToLabel(monthKey), no++, entry.cls, entry.student,
         entry.s.pronunciation || 0, entry.s.fluency || 0,
         entry.s.confidence || 0, entry.s.accuracy || 0,
         (entry.s.sentences || []).filter(Boolean).length,
@@ -174,9 +271,8 @@ export default function App() {
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
-    const dateStr = new Date().toISOString().slice(0, 10);
     link.href = url;
-    link.setAttribute("download", `EiE_Shouting_랭킹_${dateStr}.csv`);
+    link.setAttribute("download", `EiE_Shouting_랭킹_${monthKey}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -201,23 +297,11 @@ export default function App() {
       });
       return next;
     });
-    setScores((prev) => {
-      if (!prev[oldName]) return prev;
-      const next = { ...prev };
-      next[trimmed] = next[oldName];
-      delete next[oldName];
-      return next;
-    });
     return true;
   }
 
   function deleteClass(cls) {
     setClasses((prev) => {
-      const next = { ...prev };
-      delete next[cls];
-      return next;
-    });
-    setScores((prev) => {
       const next = { ...prev };
       delete next[cls];
       return next;
@@ -240,13 +324,6 @@ export default function App() {
       ...prev,
       [cls]: (prev[cls] || []).map((s) => (s === oldName ? trimmed : s)),
     }));
-    setScores((prev) => {
-      if (!prev[cls] || !prev[cls][oldName]) return prev;
-      const next = { ...prev, [cls]: { ...prev[cls] } };
-      next[cls][trimmed] = next[cls][oldName];
-      delete next[cls][oldName];
-      return next;
-    });
     return true;
   }
 
@@ -255,12 +332,6 @@ export default function App() {
       ...prev,
       [cls]: (prev[cls] || []).filter((s) => s !== student),
     }));
-    setScores((prev) => {
-      if (!prev[cls]) return prev;
-      const next = { ...prev, [cls]: { ...prev[cls] } };
-      delete next[cls][student];
-      return next;
-    });
   }
 
   if (!loaded) {
@@ -281,32 +352,57 @@ export default function App() {
     </div>
   );
 
+  // ---------- HOME ----------
   if (view === "home") {
     return (
       <div className="min-h-screen bg-gradient-to-br from-rose-50 via-amber-50 to-rose-50 p-6">
         <SyncBadge />
         <div className="max-w-3xl mx-auto">
-          <div className="text-center mb-8 pt-6">
+          <div className="text-center mb-6 pt-6">
             <h1 className="text-3xl font-bold text-rose-900 mb-1">EiE Shouting Time</h1>
             <p className="text-rose-500 text-sm">스피킹 채점 기록창</p>
           </div>
+
+          <div className="bg-white rounded-2xl shadow-sm border border-rose-200 p-3 mb-5 flex items-center justify-center gap-2">
+            <Calendar size={16} className="text-rose-700" />
+            <span className="text-sm text-gray-500">채점 중인 시험 회차:</span>
+            <select
+              value={currentMonth}
+              onChange={async (e) => {
+                const m = e.target.value;
+                setCurrentMonth(m);
+                await ensureMonthLoaded(m);
+              }}
+              className="text-sm font-bold text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1 focus:outline-none"
+            >
+              {!availableMonths.includes(currentMonth) && (
+                <option value={currentMonth}>{monthKeyToLabel(currentMonth)} (신규)</option>
+              )}
+              {availableMonths.map((m) => (
+                <option key={m} value={m}>{monthKeyToLabel(m)}</option>
+              ))}
+            </select>
+          </div>
+
           <div className="flex gap-3 mb-6">
-            <button onClick={() => setView("ranking")} className="flex-1 flex items-center justify-center gap-2 bg-rose-900 hover:bg-rose-800 text-white font-semibold py-3 rounded-2xl shadow-md transition-colors">
+            <button onClick={() => { setRankingMonth(currentMonth); setView("ranking"); }} className="flex-1 flex items-center justify-center gap-2 bg-rose-900 hover:bg-rose-800 text-white font-semibold py-3 rounded-2xl shadow-md transition-colors">
               <Trophy size={20} /> 전체 랭킹 보기
             </button>
             <button onClick={() => setView("manage")} className="flex items-center justify-center gap-2 bg-white hover:bg-rose-50 text-rose-800 font-semibold py-3 px-4 rounded-2xl shadow-sm border border-rose-200 transition-colors">
               <Settings size={20} /> 반/학생 관리
             </button>
           </div>
+
           {Object.keys(classes).length === 0 && (
             <div className="text-center text-rose-400 text-sm bg-white rounded-2xl p-8 border border-rose-100">
               등록된 반이 없어요. "반/학생 관리"에서 반을 추가해주세요.
             </div>
           )}
+
           <div className="grid sm:grid-cols-2 gap-4">
             {Object.entries(classes).map(([cls, students]) => {
               const doneCount = students.filter((s) => {
-                const sc = scores?.[cls]?.[s];
+                const sc = scoresByMonth?.[currentMonth]?.[cls]?.[s];
                 return sc && calcTotal(sc) > 0;
               }).length;
               return (
@@ -324,6 +420,7 @@ export default function App() {
     );
   }
 
+  // ---------- MANAGE ----------
   if (view === "manage") {
     return (
       <>
@@ -333,29 +430,51 @@ export default function App() {
     );
   }
 
+  // ---------- RANKING (월 선택 가능) ----------
   if (view === "ranking") {
     const allEntries = [];
     Object.entries(classes).forEach(([cls, students]) => {
       students.forEach((student) => {
-        const s = getScore(cls, student);
+        const s = getScore(rankingMonth, cls, student);
         const total = calcTotal(s);
         allEntries.push({ cls, student, s, total });
       });
     });
     allEntries.sort((a, b) => b.total - a.total);
+
+    const monthOptions = Array.from(new Set([...availableMonths, currentMonth])).sort();
+
     return (
       <div className="min-h-screen bg-gradient-to-br from-rose-50 via-amber-50 to-rose-50 p-6">
         <SyncBadge />
         <div className="max-w-3xl mx-auto">
-          <div className="flex items-center justify-between mb-6 pt-2">
+          <div className="flex items-center justify-between mb-4 pt-2">
             <button onClick={() => setView("home")} className="flex items-center gap-1 text-rose-700 font-medium hover:text-rose-900">
               <ChevronLeft size={20} /> 뒤로
             </button>
             <h1 className="text-xl font-bold text-rose-900 flex items-center gap-2"><Trophy size={20} /> 전체 학원생 랭킹</h1>
-            <button onClick={exportCSV} className="flex items-center gap-1 bg-rose-900 hover:bg-rose-800 text-white text-sm font-medium px-3 py-2 rounded-xl shadow-sm transition-colors">
+            <button onClick={() => exportCSV(rankingMonth)} className="flex items-center gap-1 bg-rose-900 hover:bg-rose-800 text-white text-sm font-medium px-3 py-2 rounded-xl shadow-sm transition-colors">
               <Download size={16} /> 엑셀(CSV)
             </button>
           </div>
+
+          <div className="flex items-center justify-center gap-2 mb-4">
+            <Calendar size={16} className="text-rose-700" />
+            <select
+              value={rankingMonth}
+              onChange={async (e) => {
+                const m = e.target.value;
+                setRankingMonth(m);
+                await ensureMonthLoaded(m);
+              }}
+              className="text-sm font-bold text-rose-800 bg-white border border-rose-200 rounded-lg px-3 py-1.5 focus:outline-none shadow-sm"
+            >
+              {monthOptions.map((m) => (
+                <option key={m} value={m}>{monthKeyToLabel(m)}</option>
+              ))}
+            </select>
+          </div>
+
           <div className="bg-white rounded-2xl shadow-sm border border-rose-100 overflow-hidden overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -392,7 +511,7 @@ export default function App() {
                   );
                 })}
                 {allEntries.length === 0 && (
-                  <tr><td colSpan={9} className="py-8 text-center text-gray-400">등록된 학생이 없어요.</td></tr>
+                  <tr><td colSpan={9} className="py-8 text-center text-gray-400">이 달 채점 기록이 없어요.</td></tr>
                 )}
               </tbody>
             </table>
@@ -402,22 +521,27 @@ export default function App() {
     );
   }
 
+  // ---------- SCORING (student list) ----------
   if (view === "scoring" && !selectedStudent) {
     const students = classes[selectedClass] || [];
     return (
       <div className="min-h-screen bg-gradient-to-br from-rose-50 via-amber-50 to-rose-50 p-6">
         <SyncBadge />
         <div className="max-w-2xl mx-auto">
-          <div className="flex items-center justify-between mb-6 pt-2">
+          <div className="flex items-center justify-between mb-2 pt-2">
             <button onClick={() => setView("home")} className="flex items-center gap-1 text-rose-700 font-medium hover:text-rose-900">
               <ChevronLeft size={20} /> 뒤로
             </button>
             <h1 className="text-xl font-bold text-rose-900">{selectedClass}</h1>
             <div className="w-16" />
           </div>
+          <div className="text-center text-xs text-rose-500 mb-4">
+            {monthKeyToLabel(currentMonth)} 채점 중
+          </div>
+
           <div className="space-y-2">
             {students.map((student) => {
-              const s = getScore(selectedClass, student);
+              const s = getScore(currentMonth, selectedClass, student);
               const total = calcTotal(s);
               const isDone = total > 0;
               return (
@@ -438,21 +562,23 @@ export default function App() {
     );
   }
 
+  // ---------- SCORING (single student) ----------
   if (view === "scoring" && selectedStudent) {
-    const score = getScore(selectedClass, selectedStudent);
+    const score = getScore(currentMonth, selectedClass, selectedStudent);
     const total = calcTotal(score);
     const sentenceCheckedCount = (score.sentences || []).filter(Boolean).length;
     return (
       <div className="min-h-screen bg-gradient-to-br from-rose-50 via-amber-50 to-rose-50 p-6">
         <SyncBadge />
         <div className="max-w-2xl mx-auto pb-10">
-          <div className="flex items-center justify-between mb-5 pt-2">
+          <div className="flex items-center justify-between mb-1 pt-2">
             <button onClick={() => setSelectedStudent(null)} className="flex items-center gap-1 text-rose-700 font-medium hover:text-rose-900">
               <ChevronLeft size={20} /> {selectedClass}
             </button>
             <h1 className="text-xl font-bold text-rose-900">{selectedStudent}</h1>
             <div className="w-16 text-right"><span className="text-sm font-bold text-rose-800">{total}/{MAX_TOTAL}</span></div>
           </div>
+          <div className="text-center text-xs text-rose-500 mb-4">{monthKeyToLabel(currentMonth)} 채점</div>
 
           <div className="bg-white rounded-2xl shadow-sm border border-rose-100 p-4 mb-4">
             <h2 className="text-sm font-bold text-gray-500 mb-3">평가 기준 (각 5점, 총 20점)</h2>
@@ -465,7 +591,7 @@ export default function App() {
                   </div>
                   <div className="flex gap-1.5">
                     {SCORE_OPTIONS.map((val) => (
-                      <button key={val} onClick={() => updateScore(selectedClass, selectedStudent, (prev) => ({ ...prev, [c.key]: val }))} className={`flex-1 py-2 rounded-lg text-sm font-semibold transition-colors ${(score[c.key] ?? 0) === val ? "bg-rose-800 text-white" : "bg-rose-50 text-rose-400 hover:bg-rose-100"}`}>
+                      <button key={val} onClick={() => updateScore(currentMonth, selectedClass, selectedStudent, (prev) => ({ ...prev, [c.key]: val }))} className={`flex-1 py-2 rounded-lg text-sm font-semibold transition-colors ${(score[c.key] ?? 0) === val ? "bg-rose-800 text-white" : "bg-rose-50 text-rose-400 hover:bg-rose-100"}`}>
                         {val}
                       </button>
                     ))}
@@ -484,7 +610,7 @@ export default function App() {
               {Array.from({ length: TOTAL_SENTENCES }).map((_, i) => {
                 const checked = score.sentences?.[i] || false;
                 return (
-                  <button key={i} onClick={() => updateScore(selectedClass, selectedStudent, (prev) => {
+                  <button key={i} onClick={() => updateScore(currentMonth, selectedClass, selectedStudent, (prev) => {
                     const newSentences = [...(prev.sentences || Array(TOTAL_SENTENCES).fill(false))];
                     newSentences[i] = !newSentences[i];
                     return { ...prev, sentences: newSentences };
@@ -495,14 +621,14 @@ export default function App() {
               })}
             </div>
             <div className="flex gap-2 mt-3">
-              <button onClick={() => updateScore(selectedClass, selectedStudent, (prev) => ({ ...prev, sentences: Array(TOTAL_SENTENCES).fill(true) }))} className="text-xs text-rose-600 hover:text-rose-800 underline">전체 체크</button>
-              <button onClick={() => updateScore(selectedClass, selectedStudent, (prev) => ({ ...prev, sentences: Array(TOTAL_SENTENCES).fill(false) }))} className="text-xs text-gray-400 hover:text-gray-600 underline">전체 해제</button>
+              <button onClick={() => updateScore(currentMonth, selectedClass, selectedStudent, (prev) => ({ ...prev, sentences: Array(TOTAL_SENTENCES).fill(true) }))} className="text-xs text-rose-600 hover:text-rose-800 underline">전체 체크</button>
+              <button onClick={() => updateScore(currentMonth, selectedClass, selectedStudent, (prev) => ({ ...prev, sentences: Array(TOTAL_SENTENCES).fill(false) }))} className="text-xs text-gray-400 hover:text-gray-600 underline">전체 해제</button>
             </div>
           </div>
 
           <div className="bg-white rounded-2xl shadow-sm border border-rose-100 p-4 mb-5">
             <h2 className="text-sm font-bold text-gray-500 mb-2">비고</h2>
-            <textarea value={score.note || ""} onChange={(e) => updateScore(selectedClass, selectedStudent, (prev) => ({ ...prev, note: e.target.value }))} placeholder="특이사항을 입력하세요 (선택)" className="w-full border border-rose-100 rounded-xl p-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-rose-200" rows={2} />
+            <textarea value={score.note || ""} onChange={(e) => updateScore(currentMonth, selectedClass, selectedStudent, (prev) => ({ ...prev, note: e.target.value }))} placeholder="특이사항을 입력하세요 (선택)" className="w-full border border-rose-100 rounded-xl p-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-rose-200" rows={2} />
           </div>
 
           <div className="bg-rose-900 rounded-2xl shadow-md p-4 flex items-center justify-between">
@@ -600,7 +726,7 @@ function ManageView({ classes, onBack, actions }) {
                     </div>
                     <div className="flex items-center gap-1">
                       <button onClick={() => startEditClass(cls)} className="p-1.5 text-gray-400 hover:text-rose-700 transition-colors" title="반 이름 수정"><Pencil size={15} /></button>
-                      <button onClick={() => { if (window.confirm(`"${cls}" 반을 삭제할까요? 학생과 채점 기록도 함께 삭제됩니다.`)) actions.deleteClass(cls); }} className="p-1.5 text-gray-400 hover:text-red-600 transition-colors" title="반 삭제"><Trash2 size={15} /></button>
+                      <button onClick={() => { if (window.confirm(`"${cls}" 반을 삭제할까요? 학생도 함께 삭제됩니다.`)) actions.deleteClass(cls); }} className="p-1.5 text-gray-400 hover:text-red-600 transition-colors" title="반 삭제"><Trash2 size={15} /></button>
                     </div>
                   </>
                 )}
@@ -618,7 +744,7 @@ function ManageView({ classes, onBack, actions }) {
                         <span className="text-sm text-gray-700">{student}</span>
                         <div className="flex items-center gap-1">
                           <button onClick={() => startEditStudent(cls, student)} className="p-1 text-gray-400 hover:text-rose-700 transition-colors"><Pencil size={13} /></button>
-                          <button onClick={() => { if (window.confirm(`"${student}" 학생을 삭제할까요? 채점 기록도 함께 삭제됩니다.`)) actions.deleteStudent(cls, student); }} className="p-1 text-gray-400 hover:text-red-600 transition-colors"><Trash2 size={13} /></button>
+                          <button onClick={() => { if (window.confirm(`"${student}" 학생을 삭제할까요?`)) actions.deleteStudent(cls, student); }} className="p-1 text-gray-400 hover:text-red-600 transition-colors"><Trash2 size={13} /></button>
                         </div>
                       </>
                     )}
