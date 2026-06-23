@@ -57,6 +57,10 @@ function monthKeyToLabel(key) {
   return `${y}년 ${parseInt(m, 10)}월`;
 }
 
+function buildMonthKey(year, month) {
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
 // 반/학생 명단은 월과 무관하게 공통으로 관리 (classesMeta 문서)
 const CLASSES_DOC = { collection: "shoutingMeta", doc: "classes" };
 // 월별 점수는 shoutingScores/{YYYY-MM} 문서에 저장
@@ -77,6 +81,9 @@ export default function App() {
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [savedFlash, setSavedFlash] = useState(false);
   const [rankingMonth, setRankingMonth] = useState(getCurrentMonthKey());
+  const [showMonthCreator, setShowMonthCreator] = useState(false);
+  const [newMonthYear, setNewMonthYear] = useState(new Date().getFullYear());
+  const [newMonthMonth, setNewMonthMonth] = useState(new Date().getMonth() + 1);
 
   const saveTimer = useRef(null);
   const skipNextSave = useRef(false);
@@ -363,25 +370,74 @@ export default function App() {
             <p className="text-rose-500 text-sm">스피킹 채점 기록창</p>
           </div>
 
-          <div className="bg-white rounded-2xl shadow-sm border border-rose-200 p-3 mb-5 flex items-center justify-center gap-2">
-            <Calendar size={16} className="text-rose-700" />
-            <span className="text-sm text-gray-500">채점 중인 시험 회차:</span>
-            <select
-              value={currentMonth}
-              onChange={async (e) => {
-                const m = e.target.value;
-                setCurrentMonth(m);
-                await ensureMonthLoaded(m);
-              }}
-              className="text-sm font-bold text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1 focus:outline-none"
-            >
-              {!availableMonths.includes(currentMonth) && (
-                <option value={currentMonth}>{monthKeyToLabel(currentMonth)} (신규)</option>
-              )}
-              {availableMonths.map((m) => (
-                <option key={m} value={m}>{monthKeyToLabel(m)}</option>
-              ))}
-            </select>
+          <div className="bg-white rounded-2xl shadow-sm border border-rose-200 p-3 mb-5">
+            <div className="flex items-center justify-center gap-2 mb-2">
+              <Calendar size={16} className="text-rose-700" />
+              <span className="text-sm text-gray-500">채점 중인 시험 회차:</span>
+              <select
+                value={currentMonth}
+                onChange={async (e) => {
+                  const m = e.target.value;
+                  setCurrentMonth(m);
+                  await ensureMonthLoaded(m);
+                }}
+                className="text-sm font-bold text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1 focus:outline-none"
+              >
+                {!availableMonths.includes(currentMonth) && (
+                  <option value={currentMonth}>{monthKeyToLabel(currentMonth)} (신규)</option>
+                )}
+                {availableMonths.map((m) => (
+                  <option key={m} value={m}>{monthKeyToLabel(m)}</option>
+                ))}
+              </select>
+              <button
+                onClick={() => setShowMonthCreator((v) => !v)}
+                className="text-xs text-rose-600 hover:text-rose-800 underline ml-1"
+              >
+                다른 달 만들기
+              </button>
+            </div>
+
+            {showMonthCreator && (
+              <div className="flex items-center justify-center gap-2 pt-2 border-t border-rose-100 mt-2">
+                <select
+                  value={newMonthYear}
+                  onChange={(e) => setNewMonthYear(parseInt(e.target.value, 10))}
+                  className="text-sm border border-rose-200 rounded-lg px-2 py-1 focus:outline-none"
+                >
+                  {Array.from({ length: 5 }).map((_, i) => {
+                    const y = new Date().getFullYear() - 1 + i;
+                    return <option key={y} value={y}>{y}년</option>;
+                  })}
+                </select>
+                <select
+                  value={newMonthMonth}
+                  onChange={(e) => setNewMonthMonth(parseInt(e.target.value, 10))}
+                  className="text-sm border border-rose-200 rounded-lg px-2 py-1 focus:outline-none"
+                >
+                  {Array.from({ length: 12 }).map((_, i) => (
+                    <option key={i + 1} value={i + 1}>{i + 1}월</option>
+                  ))}
+                </select>
+                <button
+                  onClick={async () => {
+                    const newKey = buildMonthKey(newMonthYear, newMonthMonth);
+                    setCurrentMonth(newKey);
+                    await ensureMonthLoaded(newKey);
+                    setShowMonthCreator(false);
+                  }}
+                  className="flex items-center gap-1 bg-rose-800 hover:bg-rose-900 text-white text-sm font-medium px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  <Plus size={14} /> 생성
+                </button>
+                <button
+                  onClick={() => setShowMonthCreator(false)}
+                  className="text-sm text-gray-400 hover:text-gray-600 px-2 py-1.5"
+                >
+                  취소
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="flex gap-3 mb-6">
