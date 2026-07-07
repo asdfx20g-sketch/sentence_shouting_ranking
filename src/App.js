@@ -42,7 +42,14 @@ function emptyScore() {
     accuracy: 0,
     sentences: Array(TOTAL_SENTENCES).fill(false),
     note: "",
+    recordedTime: null, // "2:34" 형식으로 저장
   };
+}
+
+function formatTime(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
 }
 
 function getCurrentMonthKey() {
@@ -246,7 +253,7 @@ export default function App() {
 
   function exportCSV(monthKey) {
     const rows = [];
-    rows.push(["월", "No", "반", "이름", "발음", "유창성", "자신감", "암기정확도", "맞은문장수", "총점", "비고"]);
+    rows.push(["월", "No", "반", "이름", "발음", "유창성", "자신감", "암기정확도", "맞은문장수", "총점", "시간", "비고"]);
     let no = 1;
     const allEntries = [];
     Object.entries(classes).forEach(([cls, students]) => {
@@ -263,7 +270,7 @@ export default function App() {
         entry.s.pronunciation || 0, entry.s.fluency || 0,
         entry.s.confidence || 0, entry.s.accuracy || 0,
         (entry.s.sentences || []).filter(Boolean).length,
-        entry.total, entry.s.note || "",
+        entry.total, entry.s.recordedTime || "-", entry.s.note || "",
       ]);
     });
     const csvContent = "\uFEFF" + rows.map((r) =>
@@ -636,6 +643,16 @@ export default function App() {
           </div>
           <div className="text-center text-xs text-rose-500 mb-4">{monthKeyToLabel(currentMonth)} 채점</div>
 
+          <TimerBlock
+            recordedTime={score.recordedTime || null}
+            onStop={(timeStr) =>
+              updateScore(currentMonth, selectedClass, selectedStudent, (prev) => ({
+                ...prev,
+                recordedTime: timeStr,
+              }))
+            }
+          />
+
           <div className="bg-white rounded-2xl shadow-sm border border-rose-100 p-4 mb-4">
             <h2 className="text-sm font-bold text-gray-500 mb-3">평가 기준 (각 5점, 총 20점)</h2>
             <div className="space-y-3">
@@ -702,6 +719,77 @@ export default function App() {
   }
 
   return null;
+}
+
+// ===================== 타이머 컴포넌트 =====================
+function TimerBlock({ recordedTime, onStop }) {
+  const [seconds, setSeconds] = useState(0);
+  const [running, setRunning] = useState(false);
+  const intervalRef = useRef(null);
+
+  useEffect(() => {
+    if (running) {
+      intervalRef.current = setInterval(() => {
+        setSeconds((s) => s + 1);
+      }, 1000);
+    } else {
+      clearInterval(intervalRef.current);
+    }
+    return () => clearInterval(intervalRef.current);
+  }, [running]);
+
+  function handleStart() {
+    setSeconds(0);
+    setRunning(true);
+  }
+
+  function handleStop() {
+    setRunning(false);
+    onStop(formatTime(seconds));
+  }
+
+  const isOver3min = seconds >= 180;
+
+  return (
+    <div className={`rounded-2xl shadow-sm border p-4 mb-4 ${isOver3min ? "bg-red-50 border-red-200" : "bg-white border-rose-100"}`}>
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm font-bold text-gray-500">스피킹 타이머</h2>
+        {recordedTime && !running && (
+          <span className="text-xs bg-rose-100 text-rose-700 font-semibold px-2.5 py-1 rounded-full">
+            기록: {recordedTime}
+          </span>
+        )}
+      </div>
+      <div className="flex items-center gap-4">
+        <div className={`text-4xl font-bold tabular-nums ${isOver3min ? "text-red-600" : "text-rose-900"}`}>
+          {formatTime(seconds)}
+        </div>
+        <div className="flex gap-2">
+          {!running ? (
+            <button
+              onClick={handleStart}
+              className="bg-rose-800 hover:bg-rose-900 text-white font-semibold px-4 py-2 rounded-xl text-sm transition-colors"
+            >
+              {seconds === 0 ? "시작" : "다시 시작"}
+            </button>
+          ) : (
+            <button
+              onClick={handleStop}
+              className="bg-rose-600 hover:bg-rose-700 text-white font-semibold px-4 py-2 rounded-xl text-sm transition-colors"
+            >
+              정지 · 기록
+            </button>
+          )}
+        </div>
+        {isOver3min && (
+          <span className="text-xs text-red-500 font-medium">3분 초과!</span>
+        )}
+      </div>
+      {recordedTime && !running && seconds === 0 && (
+        <p className="text-xs text-gray-400 mt-2">이전 기록된 시간: {recordedTime}</p>
+      )}
+    </div>
+  );
 }
 
 function ManageView({ classes, onBack, actions }) {
