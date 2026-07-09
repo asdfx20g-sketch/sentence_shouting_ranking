@@ -16,11 +16,7 @@ const TOTAL_SENTENCES = 30;
 const MAX_TOTAL = 20 + TOTAL_SENTENCES;
 const SCORE_OPTIONS = [0, 1, 2, 3, 4, 5];
 
-const DEFAULT_CLASSES = {
-  "초등 3반": ["김민준", "이서윤", "박지호", "최하은", "정도윤"],
-  "초등 4반": ["강서연", "윤지후", "임수아", "한예준", "오다인"],
-  "초등 5반": ["서준우", "황아린", "조은우", "신지유", "권태양"],
-};
+const DEFAULT_CLASSES = {}; // Firestore에 데이터 없을 때 빈 상태로 시작
 
 function emptyScore() {
   return {
@@ -92,9 +88,8 @@ export default function App() {
         if (snap.exists()) {
           const d = snap.data();
           if (d.classes) { skipNextSave.current = true; setClasses(d.classes); }
-        } else {
-          await setDoc(ref, { classes: DEFAULT_CLASSES, updatedAt: Date.now() });
         }
+        // 데이터 없으면 빈 상태로 시작 (덮어쓰지 않음)
         setConnError(false);
       } catch (e) { setConnError(true); }
       finally { setLoaded(true); }
@@ -172,7 +167,8 @@ export default function App() {
       const cs = ms[cls] || {};
       const newScore = updater(cs[student] || emptyScore());
       const newMs = { ...ms, [cls]: { ...cs, [student]: newScore } };
-      saveMonthScores(mk, newMs);
+      // setState 콜백 밖에서 저장 (안정성)
+      setTimeout(() => saveMonthScores(mk, newMs), 0);
       return { ...prev, [mk]: newMs };
     });
   }
@@ -185,7 +181,7 @@ export default function App() {
       const cur = cs[selectedStudent] || emptyScore();
       const newScore = pendingTime ? { ...cur, recordedTime: pendingTime } : cur;
       const newMs = { ...ms, [selectedClass]: { ...cs, [selectedStudent]: newScore } };
-      saveMonthScores(currentMonth, newMs);
+      setTimeout(() => saveMonthScores(currentMonth, newMs), 0);
       pendingTimeRef.current = null;
       return { ...prev, [currentMonth]: newMs };
     });
