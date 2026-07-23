@@ -210,7 +210,7 @@ export default function App() {
         const prev = entries[i - 1];
         const sameScore = e.total === prev.total;
         const sameTime = (e.s.recordedTime || null) === (prev.s.recordedTime || null);
-        if (!(sameScore && sameTime)) csvRank = i + 1;
+        if (!(sameScore && sameTime)) csvRank = csvRank + 1;
       }
       rows.push([
         monthKeyToLabel(mk), csvRank, e.cls, e.student,
@@ -359,14 +359,14 @@ export default function App() {
     });
     allEntries.sort((a, b) => b.total - a.total || timeToSeconds(a.s.recordedTime) - timeToSeconds(b.s.recordedTime));
 
-    // 동점+동시간이면 같은 등수
+    // 동점+동시간이면 같은 등수, 다음 순위는 건너뛰지 않음
     let rank = 1;
     const rankedEntries = allEntries.map((e, idx) => {
       if (idx > 0) {
         const prev = allEntries[idx - 1];
         const sameScore = e.total === prev.total;
         const sameTime = (e.s.recordedTime || null) === (prev.s.recordedTime || null);
-        if (!(sameScore && sameTime)) rank = idx + 1;
+        if (!(sameScore && sameTime)) rank = rank + 1;
       }
       return { ...e, rank };
     });
