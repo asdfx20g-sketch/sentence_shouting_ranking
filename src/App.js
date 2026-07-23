@@ -15,8 +15,7 @@ const CRITERIA = [
 const TOTAL_SENTENCES = 30;
 const MAX_TOTAL = 20 + TOTAL_SENTENCES;
 const SCORE_OPTIONS = [0, 1, 2, 3, 4, 5];
-
-const DEFAULT_CLASSES = {}; // Firestore에 데이터 없을 때 빈 상태로 시작
+const DEFAULT_CLASSES = {};
 
 function emptyScore() {
   return {
@@ -70,7 +69,6 @@ export default function App() {
   const [showMonthCreator, setShowMonthCreator] = useState(false);
   const [newMonthYear, setNewMonthYear] = useState(new Date().getFullYear());
   const [newMonthMonth, setNewMonthMonth] = useState(new Date().getMonth() + 1);
-  // 달 이동 관련 state
   const [showMovePanel, setShowMovePanel] = useState(false);
   const [moveYear, setMoveYear] = useState(new Date().getFullYear());
   const [moveMonth, setMoveMonth] = useState(new Date().getMonth() + 1);
@@ -89,7 +87,6 @@ export default function App() {
           const d = snap.data();
           if (d.classes) { skipNextSave.current = true; setClasses(d.classes); }
         }
-        // 데이터 없으면 빈 상태로 시작 (덮어쓰지 않음)
         setConnError(false);
       } catch (e) { setConnError(true); }
       finally { setLoaded(true); }
@@ -167,7 +164,6 @@ export default function App() {
       const cs = ms[cls] || {};
       const newScore = updater(cs[student] || emptyScore());
       const newMs = { ...ms, [cls]: { ...cs, [student]: newScore } };
-      // setState 콜백 밖에서 저장 (안정성)
       setTimeout(() => saveMonthScores(mk, newMs), 0);
       return { ...prev, [mk]: newMs };
     });
@@ -194,6 +190,31 @@ export default function App() {
       + (s.sentences || []).filter(Boolean).length;
   }
 
+  // 랭킹 그룹핑 함수 (동점+동시간 → 같은 줄)
+  function buildRankedGroups(entries) {
+    const sorted = [...entries].sort(
+      (a, b) => b.total - a.total || timeToSeconds(a.s.recordedTime) - timeToSeconds(b.s.recordedTime)
+    );
+    const groups = [];
+    let rank = 1;
+    sorted.forEach((e, idx) => {
+      if (idx === 0) {
+        groups.push({ rank, items: [e] });
+      } else {
+        const prev = sorted[idx - 1];
+        const same = e.total === prev.total &&
+          (e.s.recordedTime || null) === (prev.s.recordedTime || null);
+        if (same) {
+          groups[groups.length - 1].items.push(e);
+        } else {
+          rank = rank + 1;
+          groups.push({ rank, items: [e] });
+        }
+      }
+    });
+    return groups;
+  }
+
   function exportCSV(mk) {
     const rows = [["월", "순위", "반", "이름", "발음", "유창성", "자신감", "암기정확도", "맞은문장수", "총점", "시간", "비고"]];
     const entries = [];
@@ -203,21 +224,16 @@ export default function App() {
         entries.push({ cls, student, s, total: calcTotal(s) });
       });
     });
-    entries.sort((a, b) => b.total - a.total || timeToSeconds(a.s.recordedTime) - timeToSeconds(b.s.recordedTime));
-    let csvRank = 1;
-    entries.forEach((e, i) => {
-      if (i > 0) {
-        const prev = entries[i - 1];
-        const sameScore = e.total === prev.total;
-        const sameTime = (e.s.recordedTime || null) === (prev.s.recordedTime || null);
-        if (!(sameScore && sameTime)) csvRank = csvRank + 1;
-      }
-      rows.push([
-        monthKeyToLabel(mk), csvRank, e.cls, e.student,
-        e.s.pronunciation || 0, e.s.fluency || 0, e.s.confidence || 0, e.s.accuracy || 0,
-        (e.s.sentences || []).filter(Boolean).length, e.total,
-        e.s.recordedTime || "-", e.s.note || "",
-      ]);
+    const groups = buildRankedGroups(entries);
+    groups.forEach(({ rank, items }) => {
+      items.forEach((e) => {
+        rows.push([
+          monthKeyToLabel(mk), rank, e.cls, e.student,
+          e.s.pronunciation || 0, e.s.fluency || 0, e.s.confidence || 0, e.s.accuracy || 0,
+          (e.s.sentences || []).filter(Boolean).length, e.total,
+          e.s.recordedTime || "-", e.s.note || "",
+        ]);
+      });
     });
     const csv = "\uFEFF" + rows.map((r) => r.map((c) => {
       const s = String(c ?? "");
@@ -234,9 +250,7 @@ export default function App() {
     const targetKey = buildMonthKey(moveYear, moveMonth);
     if (targetKey === currentMonth) { alert("현재 달과 같은 달이에요."); return; }
     if (!window.confirm(`"${selectedClass}" 반 기록을 ${monthKeyToLabel(currentMonth)}에서 ${monthKeyToLabel(targetKey)}로 이동할까요?\n\n원래 달(${monthKeyToLabel(currentMonth)})의 이 반 기록은 초기화됩니다.`)) return;
-
     await ensureMonthLoaded(targetKey);
-
     setScoresByMonth((prev) => {
       const srcMonth = prev[currentMonth] || {};
       const dstMonth = prev[targetKey] || {};
@@ -244,12 +258,9 @@ export default function App() {
       const newDstMonth = { ...dstMonth, [selectedClass]: classData };
       const newSrcMonth = { ...srcMonth };
       delete newSrcMonth[selectedClass];
-      const next = { ...prev, [currentMonth]: newSrcMonth, [targetKey]: newDstMonth };
-      saveMonthScores(currentMonth, newSrcMonth);
-      saveMonthScores(targetKey, newDstMonth);
-      return next;
+      setTimeout(() => { saveMonthScores(currentMonth, newSrcMonth); saveMonthScores(targetKey, newDstMonth); }, 0);
+      return { ...prev, [currentMonth]: newSrcMonth, [targetKey]: newDstMonth };
     });
-
     setShowMovePanel(false);
     alert(`이동 완료! ${monthKeyToLabel(targetKey)}에서 확인하세요.`);
   }
@@ -288,7 +299,6 @@ export default function App() {
           <h1 className="text-3xl font-bold text-rose-900 mb-1">EiE Shouting Time</h1>
           <p className="text-rose-500 text-sm">스피킹 채점 기록창</p>
         </div>
-
         <div className="bg-white rounded-2xl shadow-sm border border-rose-200 p-3 mb-5">
           <div className="flex items-center justify-center gap-2 mb-2">
             <Calendar size={16} className="text-rose-700" />
@@ -316,7 +326,6 @@ export default function App() {
             </div>
           )}
         </div>
-
         <div className="flex gap-3 mb-6">
           <button onClick={() => { setRankingMonth(currentMonth); setView("ranking"); }} className="flex-1 flex items-center justify-center gap-2 bg-rose-900 hover:bg-rose-800 text-white font-semibold py-3 rounded-2xl shadow-md transition-colors">
             <Trophy size={20} /> 전체 랭킹 보기
@@ -325,7 +334,6 @@ export default function App() {
             <Settings size={20} /> 반/학생 관리
           </button>
         </div>
-
         <div className="grid sm:grid-cols-2 gap-4">
           {Object.entries(classes).map(([cls, students]) => {
             const doneCount = students.filter((s) => { const sc = scoresByMonth?.[currentMonth]?.[cls]?.[s]; return sc && calcTotal(sc) > 0; }).length;
@@ -357,19 +365,8 @@ export default function App() {
         allEntries.push({ cls, student, s, total: calcTotal(s) });
       });
     });
-    allEntries.sort((a, b) => b.total - a.total || timeToSeconds(a.s.recordedTime) - timeToSeconds(b.s.recordedTime));
+    const groups = buildRankedGroups(allEntries);
 
-    // 동점+동시간이면 같은 등수, 다음 순위는 건너뛰지 않음
-    let rank = 1;
-    const rankedEntries = allEntries.map((e, idx) => {
-      if (idx > 0) {
-        const prev = allEntries[idx - 1];
-        const sameScore = e.total === prev.total;
-        const sameTime = (e.s.recordedTime || null) === (prev.s.recordedTime || null);
-        if (!(sameScore && sameTime)) rank = rank + 1;
-      }
-      return { ...e, rank };
-    });
     return (
       <div className="min-h-screen bg-gradient-to-br from-rose-50 via-amber-50 to-rose-50 p-6">
         <SyncBadge />
@@ -405,13 +402,18 @@ export default function App() {
                 </tr>
               </thead>
               <tbody>
-                {rankedEntries.map((e, idx) => {
-                  const rank = e.rank;
+                {groups.map(({ rank, items }, gIdx) => {
+                  const e = items[0];
+                  const names = items.map((i) => i.student).join(", ");
+                  const clsNames = [...new Set(items.map((i) => i.cls))].join(", ");
+                  const isTop3 = rank <= 3;
                   return (
-                    <tr key={e.cls + e.student} className={`border-b border-rose-50 ${rank <= 3 ? "bg-amber-50" : idx % 2 === 0 ? "bg-white" : "bg-rose-50/30"}`}>
-                      <td className="py-2.5 px-3 text-center font-bold">{rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : rank}</td>
-                      <td className="py-2.5 px-3 font-medium text-gray-800">{e.student}</td>
-                      <td className="py-2.5 px-3 text-gray-500">{e.cls}</td>
+                    <tr key={rank} className={`border-b border-rose-50 ${isTop3 ? "bg-amber-50" : gIdx % 2 === 0 ? "bg-white" : "bg-rose-50/30"}`}>
+                      <td className="py-2.5 px-3 text-center font-bold whitespace-nowrap">
+                        {rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : rank}
+                      </td>
+                      <td className="py-2.5 px-3 font-medium text-gray-800">{names}</td>
+                      <td className="py-2.5 px-3 text-gray-500">{clsNames}</td>
                       <td className="py-2.5 px-3 text-center">{e.s.pronunciation || 0}</td>
                       <td className="py-2.5 px-3 text-center">{e.s.fluency || 0}</td>
                       <td className="py-2.5 px-3 text-center">{e.s.confidence || 0}</td>
@@ -422,7 +424,7 @@ export default function App() {
                     </tr>
                   );
                 })}
-                {allEntries.length === 0 && <tr><td colSpan={10} className="py-8 text-center text-gray-400">이 달 채점 기록이 없어요.</td></tr>}
+                {groups.length === 0 && <tr><td colSpan={10} className="py-8 text-center text-gray-400">이 달 채점 기록이 없어요.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -444,8 +446,6 @@ export default function App() {
             <div className="w-16" />
           </div>
           <div className="text-center text-xs text-rose-500 mb-4">{monthKeyToLabel(currentMonth)} 채점 중</div>
-
-          {/* 달 이동 패널 */}
           <div className="bg-white rounded-2xl shadow-sm border border-rose-100 p-4 mb-4">
             <div className="flex items-center justify-between">
               <span className="text-sm text-gray-500">이 반 기록을 다른 달로 이동</span>
@@ -462,14 +462,11 @@ export default function App() {
                 <select value={moveMonth} onChange={(e) => setMoveMonth(+e.target.value)} className="text-sm border border-rose-200 rounded-lg px-2 py-1 focus:outline-none">
                   {Array.from({ length: 12 }).map((_, i) => <option key={i + 1} value={i + 1}>{i + 1}월</option>)}
                 </select>
-                <button onClick={handleMoveClass} className="flex items-center gap-1 bg-rose-800 hover:bg-rose-900 text-white text-sm font-medium px-3 py-1.5 rounded-lg transition-colors">
-                  이동
-                </button>
+                <button onClick={handleMoveClass} className="flex items-center gap-1 bg-rose-800 hover:bg-rose-900 text-white text-sm font-medium px-3 py-1.5 rounded-lg transition-colors">이동</button>
                 <button onClick={() => setShowMovePanel(false)} className="text-sm text-gray-400 hover:text-gray-600 px-2">취소</button>
               </div>
             )}
           </div>
-
           <div className="space-y-2">
             {students.map((student) => {
               const s = getScore(currentMonth, selectedClass, student);
@@ -481,7 +478,7 @@ export default function App() {
                   <span className="font-medium text-gray-800">{student}</span>
                   <div className="flex items-center gap-2">
                     {s.recordedTime && (
-                      <span className="flex items-center gap-1 text.xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">
+                      <span className="flex items-center gap-1 text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">
                         <Timer size={11} /> {s.recordedTime}
                       </span>
                     )}
@@ -516,9 +513,7 @@ export default function App() {
             <div className="w-16 text-right"><span className="text-sm font-bold text-rose-800">{total}/{MAX_TOTAL}</span></div>
           </div>
           <div className="text-center text-xs text-rose-500 mb-4">{monthKeyToLabel(currentMonth)} 채점</div>
-
           <TimerBlock recordedTime={score.recordedTime} onTimeUpdate={(t) => { pendingTimeRef.current = t; }} />
-
           <div className="bg-white rounded-2xl shadow-sm border border-rose-100 p-4 mb-4">
             <div className="flex items-baseline justify-between mb-3">
               <h2 className="text-sm font-bold text-gray-500">맞은 문장 체크 (총 30문장)</h2>
@@ -543,7 +538,6 @@ export default function App() {
               <button onClick={() => updateScoreImmediate(currentMonth, selectedClass, selectedStudent, (p) => ({ ...p, sentences: Array(TOTAL_SENTENCES).fill(false) }))} className="text-xs text-gray-400 hover:text-gray-600 underline">전체 해제</button>
             </div>
           </div>
-
           <div className="bg-white rounded-2xl shadow-sm border border-rose-100 p-4 mb-4">
             <h2 className="text-sm font-bold text-gray-500 mb-3">평가 기준 (각 5점, 총 20점)</h2>
             <div className="space-y-3">
@@ -565,13 +559,11 @@ export default function App() {
               ))}
             </div>
           </div>
-
           <div className="bg-white rounded-2xl shadow-sm border border-rose-100 p-4 mb-5">
             <h2 className="text-sm font-bold text-gray-500 mb-2">비고</h2>
             <textarea value={score.note || ""} onChange={(e) => updateScoreImmediate(currentMonth, selectedClass, selectedStudent, (p) => ({ ...p, note: e.target.value }))}
               placeholder="특이사항을 입력하세요 (선택)" className="w-full border border-rose-100 rounded-xl p-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-rose-200" rows={2} />
           </div>
-
           <div className="bg-rose-900 rounded-2xl shadow-md p-4 flex items-center justify-between">
             <div className="text-white">
               <div className="text-xs text-rose-200">총점</div>
@@ -589,7 +581,7 @@ export default function App() {
   return null;
 }
 
-// ===================== 타이머 컴포넌트 =====================
+// ===================== 타이머 =====================
 function TimerBlock({ recordedTime, onTimeUpdate }) {
   const [seconds, setSeconds] = useState(0);
   const [running, setRunning] = useState(false);
@@ -676,8 +668,8 @@ function ManageView({ classes, onBack, actions }) {
               <div className="flex items-center justify-between mb-3">
                 {editingClass === cls ? (
                   <div className="flex items-center gap-2 flex-1">
-                    <input autoFocus value={editClassValue} onChange={(e) => setEditClassValue(e.target.value)} onKeyDown={(e) => e.key === "Enter" && confirmEditClass()} className="flex-1 border border-rose-300 rounded-lg px-2 py-1 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-rose-200" />
-                    <button onClick={confirmEditClass} className="text-xs bg-rose-800 text-white px-3 py-1.5 rounded-lg font-medium">확인</button>
+                    <input autoFocus value={editClassValue} onChange={(e) => setEditClassValue(e.target.value)} onKeyDown={(e) => e.key === "Enter" && confirmEditClass()} className="flex-1 border border-rose-300 rounded-lg px-2 py-1 text-sm font-bold focus:outline-none" />
+                    <button onClick={confirmEditClass} className="text-xs bg-rose-800 text-white px-3 py-1.5 rounded-lg">확인</button>
                   </div>
                 ) : (
                   <>
@@ -694,8 +686,8 @@ function ManageView({ classes, onBack, actions }) {
                   <div key={student} className="flex items-center justify-between bg-rose-50/60 rounded-lg px-3 py-2">
                     {editingStudent?.cls === cls && editingStudent?.student === student ? (
                       <div className="flex items-center gap-2 flex-1">
-                        <input autoFocus value={editStudentValue} onChange={(e) => setEditStudentValue(e.target.value)} onKeyDown={(e) => e.key === "Enter" && confirmEditStudent()} className="flex-1 border border-rose-300 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-rose-200" />
-                        <button onClick={confirmEditStudent} className="text-xs bg-rose-800 text-white px-3 py-1 rounded-lg font-medium">확인</button>
+                        <input autoFocus value={editStudentValue} onChange={(e) => setEditStudentValue(e.target.value)} onKeyDown={(e) => e.key === "Enter" && confirmEditStudent()} className="flex-1 border border-rose-300 rounded-lg px-2 py-1 text-sm focus:outline-none" />
+                        <button onClick={confirmEditStudent} className="text-xs bg-rose-800 text-white px-3 py-1 rounded-lg">확인</button>
                       </div>
                     ) : (
                       <>
@@ -711,8 +703,8 @@ function ManageView({ classes, onBack, actions }) {
                 {students.length === 0 && <div className="text-xs text-gray-400 px-3 py-2">등록된 학생이 없어요.</div>}
               </div>
               <div className="flex gap-2">
-                <input value={newStudentInputs[cls] || ""} onChange={(e) => setNewStudentInputs((p) => ({ ...p, [cls]: e.target.value }))} onKeyDown={(e) => e.key === "Enter" && handleAddStudent(cls)} placeholder="학생 이름 입력" className="flex-1 border border-rose-100 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-rose-200" />
-                <button onClick={() => handleAddStudent(cls)} className="flex items-center gap-1 bg-rose-100 hover:bg-rose-200 text-rose-800 font-medium px-3 py-1.5 rounded-lg text-sm transition-colors"><Plus size={14} /> 추가</button>
+                <input value={newStudentInputs[cls] || ""} onChange={(e) => setNewStudentInputs((p) => ({ ...p, [cls]: e.target.value }))} onKeyDown={(e) => e.key === "Enter" && handleAddStudent(cls)} placeholder="학생 이름 입력" className="flex-1 border border-rose-100 rounded-lg px-3 py-1.5 text-sm focus:outline-none" />
+                <button onClick={() => handleAddStudent(cls)} className="flex items-center gap-1 bg-rose-100 hover:bg-rose-200 text-rose-800 font-medium px-3 py-1.5 rounded-lg text-sm"><Plus size={14} /> 추가</button>
               </div>
             </div>
           ))}
