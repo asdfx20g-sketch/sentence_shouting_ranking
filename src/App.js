@@ -204,9 +204,16 @@ export default function App() {
       });
     });
     entries.sort((a, b) => b.total - a.total || timeToSeconds(a.s.recordedTime) - timeToSeconds(b.s.recordedTime));
+    let csvRank = 1;
     entries.forEach((e, i) => {
+      if (i > 0) {
+        const prev = entries[i - 1];
+        const sameScore = e.total === prev.total;
+        const sameTime = (e.s.recordedTime || null) === (prev.s.recordedTime || null);
+        if (!(sameScore && sameTime)) csvRank = i + 1;
+      }
       rows.push([
-        monthKeyToLabel(mk), i + 1, e.cls, e.student,
+        monthKeyToLabel(mk), csvRank, e.cls, e.student,
         e.s.pronunciation || 0, e.s.fluency || 0, e.s.confidence || 0, e.s.accuracy || 0,
         (e.s.sentences || []).filter(Boolean).length, e.total,
         e.s.recordedTime || "-", e.s.note || "",
@@ -351,6 +358,18 @@ export default function App() {
       });
     });
     allEntries.sort((a, b) => b.total - a.total || timeToSeconds(a.s.recordedTime) - timeToSeconds(b.s.recordedTime));
+
+    // 동점+동시간이면 같은 등수
+    let rank = 1;
+    const rankedEntries = allEntries.map((e, idx) => {
+      if (idx > 0) {
+        const prev = allEntries[idx - 1];
+        const sameScore = e.total === prev.total;
+        const sameTime = (e.s.recordedTime || null) === (prev.s.recordedTime || null);
+        if (!(sameScore && sameTime)) rank = idx + 1;
+      }
+      return { ...e, rank };
+    });
     return (
       <div className="min-h-screen bg-gradient-to-br from-rose-50 via-amber-50 to-rose-50 p-6">
         <SyncBadge />
@@ -386,8 +405,8 @@ export default function App() {
                 </tr>
               </thead>
               <tbody>
-                {allEntries.map((e, idx) => {
-                  const rank = idx + 1;
+                {rankedEntries.map((e, idx) => {
+                  const rank = e.rank;
                   return (
                     <tr key={e.cls + e.student} className={`border-b border-rose-50 ${rank <= 3 ? "bg-amber-50" : idx % 2 === 0 ? "bg-white" : "bg-rose-50/30"}`}>
                       <td className="py-2.5 px-3 text-center font-bold">{rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : rank}</td>
